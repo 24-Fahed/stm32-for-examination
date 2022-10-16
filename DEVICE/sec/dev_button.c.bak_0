@@ -1,0 +1,270 @@
+// 注意：这个程序有一个非常大的bug，释放和按下的状态写反了，懒得改，将就用一下
+
+/* ============================== statue machine instructer: ===========================================
+* A button contain four state: new_state, event and Next_state. Now state will switch to Next_state
+* under the effection of event. A programs has designed for get button event. 
+* Following is state machine change for a button switch from press to release
+* holding (no change):
+* _True_Press_state   -- press --> _True_Press_state   >> nothing
+
+* change state (button pressed):
+* _True_Press_state   --release--> _Hode_Press_state   >> nothing           // 容错
+* _Hode_Press_state   --release--> _Hode_Press_state   >> check_release_act // 检测
+* _Hode_Press_state   --ensure_release--> _True_Release_state >> release_act // 释放
+* 
+* hode release state (after change)
+* _True_Release_state --release--> _True_Release_state >> nothing
+=======================================================================================================*/
+
+/* =============================== How to maintain state table =====================================
+* Call Button_Init() to init button state struct and state table
+* Then call analizeData(currstate, classfy_button1_event(check_press_counter, check_release_counter))
+* this function will return your current state but can not update button state struct (it is a bug).
+* 
+*/
+
+#include "dev_button.h"
+
+// 这里是老代码改的，没有进行封装，之后再整
+static button_states currstate = _True_Press_state;
+static button_act action = Other_act;
+static button_fsm_table_t table;
+static int check_release_counter = 0;
+static int check_press_counter = 0;
+
+
+// 按键对应的所有状态表
+button_fsm_table_t Button_States[] = {
+    // now_state          event                  Next_state
+                                                                                    // 按键1对应状态表
+    {_True_Press_state,   Button1_Press_event,   _True_Press_state,   nothing           },
+    {_True_Press_state,   Button1_Release_event, _Hold_Press_state,   nothing           },
+    {_Hold_Release_state, Insure1_Press_event,   _True_Press_state,   press_act         },
+    {_Hold_Press_state,   Insure1_Release_event, _True_Release_state, release_act       },
+    {_Hold_Release_state, Button1_Press_event,   _Hold_Release_state, check_press_act   },
+    {_Hold_Press_state,   Button1_Release_event, _Hold_Press_state,   check_release_act },
+    {_True_Release_state, Button1_Press_event,   _Hold_Release_state, nothing           },
+    {_True_Release_state, Button1_Release_event, _True_Release_state, nothing           },
+                                                                                    // 按键2对应状态表
+    {_True_Press_state,   Button2_Press_event,   _True_Press_state,   nothing           },
+    {_True_Press_state,   Button2_Release_event, _Hold_Press_state,   nothing           },
+    {_Hold_Release_state, Insure2_Press_event,   _True_Press_state,   press_act         },
+    {_Hold_Press_state,   Insure2_Release_event, _True_Release_state, release_act       },
+    {_Hold_Release_state, Button2_Press_event,   _Hold_Release_state, check_press_act   },
+    {_Hold_Press_state,   Button2_Release_event, _Hold_Press_state,   check_press_act   },
+    {_True_Release_state, Button2_Press_event,   _Hold_Release_state, nothing           },
+    {_True_Release_state, Button2_Release_event, _True_Release_state, nothing           },
+    
+    {_Other_state,        Other_event,           _Other_state,        fail_act}
+};
+
+
+// 开启所有按键输入的使能
+void Button_Init(void) {
+    // 开启GPIOE和2 3 4 5
+    // 初始化时钟
+    RCC->APB2ENR |= 1<<6;
+    
+    // 设置端口输入接受
+    // 接受浮空0x04
+    GPIOE->CRL &= ~0x00FFFF00;
+    GPIOE->CRL |= 0x00444400;
+    
+    /*====相关数据初始化====*/ 
+   
+}
+
+/*
+    注意：下面是一个按键的状态机，只能判断第一个按键是否按下，不能判断两个按键是否都按下，放在这里就是装x的
+*/
+
+
+// button状态机调用
+button_event classfy_button1_event(int counter_press, int counter_release) {
+    button_event event = Other_event;
+    // 获取当前数据
+    int state_int = GPIOE->IDR;
+    // 判断事件状态,使用计数器来判断按键到达那个状态
+    if (counter_press >= 3) {
+        return event = Insure1_Press_event;
+    }
+    if (counter_release <= -3) {
+        return event = Insure1_Release_event;
+    }
+    if ((state_int & 1<<2) == 1<<2)  {
+        // 没有按下按键
+        return (event = Button1_Release_event);
+    }
+    else if((state_int & 1<<2) != 1<<2) {
+        // 按键按下
+        return (event = Button1_Press_event);
+    }
+    return event;
+}
+
+button_event classfy_button2_event(int counter_press, int counter_release) {
+    button_event event = Other_event;
+    // 获取当前数据
+    int state_int = GPIOE->IDR;
+    
+    if (counter_press >= 3) {
+        return event = Insure2_Press_event;
+    }
+    if (counter_release <= -3) {
+        return event = Insure2_Release_event;
+    }
+    // 判断事件状态
+    if ((state_int & 1<<3) == 1<<3) {
+        return (event = Button2_Release_event);
+    }
+    else if ((state_int & 1<<3) == 1<<3) {
+        return (event = Button2_Press_event);
+    }
+    return event;
+}
+
+button_fsm_table_t analizeData(button_states currstate, button_event registerEvent) {
+    // 需要兼容两种按键
+    int ind;
+    for (ind = 0; ind < sizeof(Button_States) / sizeof(Button_States[0]); ++ind) {
+        if (currstate     == Button_States[ind].state && 
+            registerEvent == Button_States[ind].event) {
+                // semantic_action回调函数，调用指定行为函数
+                // currstate = Button_States[ind].nextstate; // 暂时不适用这样控制当前状态的方法，将当前状态的设置交给action
+                return (Button_States[ind]); // 返回需要执行的行动
+            }
+    }
+    return Button_States[16];
+}
+
+
+// ========================================= 测试代码 ===============================================
+// 提供检测的函数
+
+
+void test_dev_button(void) {
+    /*=========button state test============*/
+    table = analizeData(currstate, classfy_button1_event(check_press_counter, check_release_counter));
+    action = table.action;
+    switch (action) {
+        case press_act:
+                // 清空计数器
+                check_release_counter = 0;
+                check_press_counter = 0;
+                // 将对应位置设置为高电平
+                GPIOE->ODR &= ~(1<<10);
+                // GPIOA->ODR &= ~(1<<8);
+                currstate = table.nextstate;
+                break;
+            case release_act:
+                check_release_counter = 0;
+                check_press_counter = 0;
+                GPIOE->ODR |= 1<<10;
+                // GPIOA->ODR |= 1<<8;
+                currstate = table.nextstate;
+                break;
+            case check_press_act:
+                currstate = table.nextstate;
+                check_press_counter += 1;
+                break;
+            case check_release_act:
+                currstate = table.nextstate;
+                check_release_counter -= 1;
+                break;
+            case fail_act:
+                break;
+            default:
+                currstate = table.nextstate;
+    }
+}
+
+void init_button_test(void) {
+    // 开启GPIOE的高位置，将他们的输出绑定
+    // 时钟已经使能
+    if ((RCC->APB2ENR & 1<<6) != 1<<6) {
+        RCC->APB2ENR |= 1<<6;
+    }
+    GPIOE->CRH &= (~0x00FFFF00);
+    GPIOE->CRH |= 0x00333300; // 设置为推挽输出
+    // 初始化为高点平
+    GPIOE->ODR |= 1<<10;
+    GPIOE->ODR |= 1<<11;
+    GPIOE->ODR |= 1<<12;
+    GPIOE->ODR |= 1<<13;
+}
+
+
+
+
+/*================================APP================================*/
+// 注: 此函数应该出现在按键相关的APP中，在这里临时存放
+// 该函数检测按键行为，并返回指定的return code。只有确认被按下的时候才会发送1
+unsigned int button_action_Executer(void) {
+    unsigned int return_code = 0;
+    /*=========button state test============*/
+    table = analizeData(currstate, classfy_button1_event(check_press_counter, check_release_counter));
+    action = table.action;
+    switch (action) {
+        case press_act:
+                // 清空计数器
+                check_release_counter = 0;
+                check_press_counter = 0;
+                // 将对应位置设置为高电平
+                // GPIOE->ODR &= ~(1<<10);
+                // 注意：这里是让小灯亮起，作为单片机上机测试，请初始化GPIOA
+                GPIOA->ODR &= ~(1<<8);
+                return_code = 0;                // 表示按下
+                currstate = table.nextstate;
+                break;
+        case release_act:
+                check_release_counter = 0;
+                check_press_counter = 0;
+                // GPIOE->ODR |= 1<<10;
+                // 
+                GPIOA->ODR |= 1<<8;
+                return_code = 1;
+                currstate = table.nextstate;
+                break;
+            case check_press_act:
+                currstate = table.nextstate;
+                check_press_counter += 1;
+                break;
+            case check_release_act:
+                currstate = table.nextstate;
+                check_release_counter -= 1;
+                break;
+            case fail_act:
+                break;
+            default:
+                // 维护状态表到下一个状态。
+                currstate = table.nextstate;
+    }
+    return return_code;
+}
+
+// 按键状态检测器，针对按下，松开两种状态。按下1，松开0
+/*
+unsigned int button_state_Checker(void) {
+    unsigned int return_code = 0;
+    // unsigned int statue = 0;
+    table = analizeData(currstate, classfy_button1_event(check_press_counter, check_release_counter));
+    switch (table.state) {
+        case _True_Press_state:
+            return_code = 1;
+            break;
+        case _Hold_Press_state:
+            return_code = 1;
+            break;
+        case _True_Release_state:
+            return_code = 0;
+            break;
+        case _Hold_Release_state:
+            return_code = 0;
+            break;
+        default:
+            currstate = table.nextstate;
+    }
+    return return_code;
+}*/
+
+
